@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://devforge:devforge@localhost:5432/devforge"
 
     llm_provider: str = "bedrock"
+    llm_model: str = "llama3"
     aws_region: str = "us-east-1"
     bedrock_model_id: str = "meta.llama3-1-70b-instruct-v1:0"
 
