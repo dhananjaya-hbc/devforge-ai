@@ -23,13 +23,25 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-devforge}:${POSTGRES_PASSWORD:-devforge}@postgres:5432/${POSTGRES_DB:-devforge}
+      HOST_WORKSPACE_PATH: ${HOST_WORKSPACE_PATH:-/Users/dhananjaya/Desktop/devforge-ai}
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - devforge_ollama_data:/root/.ollama
+
 volumes:
   devforge_postgres_data:
+  devforge_ollama_data:
+
