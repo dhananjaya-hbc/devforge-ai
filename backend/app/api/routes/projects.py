@@ -39,6 +39,11 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     return project
 
 
+@router.get("", response_model=list[ProjectRead])
+def list_projects(db: Session = Depends(get_db)) -> list[Project]:
+    return db.query(Project).order_by(Project.created_at.desc()).all()
+
+
 @router.get("/{project_id}", response_model=ProjectRead)
 def get_project(project_id: uuid.UUID, db: Session = Depends(get_db)) -> Project:
     return _get_project_or_404(db, project_id)
