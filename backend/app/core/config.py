@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     database_url: str = "postgresql+psycopg://devforge:devforge@localhost:5432/devforge"
+    host_workspace_path: str = "/Users/dhananjaya/Desktop/devforge-ai"
 
     llm_provider: str = "bedrock"
     llm_model: str = "llama3"
