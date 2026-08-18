@@ -7,8 +7,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_workspace_dir(project_id: str) -> str:
-    """Return the absolute path of the project's sandbox directory in the backend container."""
-    workspace_root = "/app/sandbox_workspace"
+    """Return the absolute path of the project's sandbox directory dynamically."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    workspace_root = os.path.join(base_dir, "sandbox_workspace")
     if not os.path.exists(workspace_root):
         os.makedirs(workspace_root, exist_ok=True)
     project_dir = os.path.join(workspace_root, project_id)
