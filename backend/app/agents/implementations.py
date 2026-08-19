@@ -27,14 +27,24 @@ class RequirementsOutput(BaseModel):
     acceptance_criteria: List[dict] = Field(default_factory=list)
 
 
+class ModuleSchema(BaseModel):
+    name: str
+    description: str
+
+
 class ArchitectureOutput(BaseModel):
-    modules: List[dict] = Field(default_factory=list)
+    modules: List[ModuleSchema] = Field(default_factory=list)
     design_patterns: List[str] = Field(default_factory=list)
     security_spec: str = ""
 
 
+class TableSchema(BaseModel):
+    name: str
+    sql: str
+
+
 class DatabaseOutput(BaseModel):
-    tables: List[dict] = Field(default_factory=list)
+    tables: List[TableSchema] = Field(default_factory=list)
     indexes: List[str] = Field(default_factory=list)
 
 
@@ -213,7 +223,7 @@ class DatabaseAgent(BaseAgent):
         res: DatabaseOutput = self.llm.generate_structured(prompt, DatabaseOutput, sys_prompt)
 
         # Write schema to files for documentation/sandbox
-        sql_content = "\n\n".join([table["sql"] for table in res.tables]) + "\n\n" + "\n".join(res.indexes)
+        sql_content = "\n\n".join([table.sql for table in res.tables]) + "\n\n" + "\n".join(res.indexes)
         create_file(self.db, str(self.project_id), "schema.sql", sql_content, str(agent_run_id))
 
         # Save schema to Memory
