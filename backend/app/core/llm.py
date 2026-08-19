@@ -414,7 +414,7 @@ class GroqProvider(LLMProvider):
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
     MAX_RETRIES = 5
 
-    def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 4000):
+    def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 8000):
         self.api_key = api_key
         self.model = model
         # Reasoning models spend thousands of hidden tokens before answering;
