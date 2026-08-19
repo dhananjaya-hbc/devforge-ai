@@ -527,6 +527,8 @@ class GroqProvider(LLMProvider):
 class GeminiProvider(LLMProvider):
     """Google Gemini AI Studio API provider."""
     
+    MAX_RETRIES = 5
+
     def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
         self.api_key = api_key
         self.model = model
@@ -554,19 +556,36 @@ class GeminiProvider(LLMProvider):
         generation_config = {"temperature": 0.2}
         contents["generationConfig"] = generation_config
 
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, json=contents)
-                response.raise_for_status()
-                res_data = response.json()
-                candidates = res_data.get("candidates", [])
-                if not candidates:
-                    raise RuntimeError("Gemini API returned no candidates.")
-                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                return text
-        except Exception as e:
-            logger.error(f"Gemini generate error: {e}")
-            raise RuntimeError(f"Gemini invocation failed: {e}")
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                with httpx.Client(timeout=120.0) as client:
+                    response = client.post(url, json=contents)
+                    
+                    if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
+                        delay = min(2**attempt * 5, 60) + 1.0
+                        logger.warning(
+                            f"Gemini rate limited (429); retrying in {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{self.MAX_RETRIES})"
+                        )
+                        time.sleep(delay)
+                        continue
+
+                    response.raise_for_status()
+                    res_data = response.json()
+                    candidates = res_data.get("candidates", [])
+                    if not candidates:
+                        raise RuntimeError("Gemini API returned no candidates.")
+                    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    return text
+            except Exception as e:
+                if attempt < self.MAX_RETRIES - 1:
+                    logger.warning(f"Gemini error, retrying: {e}")
+                    time.sleep(min(2**attempt * 5, 60) + 1.0)
+                    continue
+                logger.error(f"Gemini generate error: {e}")
+                raise RuntimeError(f"Gemini invocation failed: {e}")
+
+        raise RuntimeError(f"Gemini rate limit not cleared after {self.MAX_RETRIES} attempts.")
 
     def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
         yield self.generate(prompt, system_prompt)
