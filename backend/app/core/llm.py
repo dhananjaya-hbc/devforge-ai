@@ -162,8 +162,11 @@ class SimulatorProvider(LLMProvider):
         self.developer_attempts = 0
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
+        sys = (system_prompt or "").lower()
+        p_lower = prompt.lower()
+
         # 1. PM/Requirements Extraction Prompt
-        if "ambiguities" in prompt.lower() or "functional_requirements" in prompt.lower():
+        if "business analyst" in sys or "requirements" in sys or ("ambiguities" in p_lower and "functional_requirements" in p_lower):
             return json.dumps({
                 "functional_requirements": [
                     {"id": "FR-1", "description": "User registration with email and password"},
@@ -190,7 +193,7 @@ class SimulatorProvider(LLMProvider):
             })
 
         # 2. Architect Agent Prompt
-        elif "architecture" in prompt.lower() or "modules" in prompt.lower():
+        elif "software architect" in sys or "architect" in sys:
             return json.dumps({
                 "modules": [
                     {"name": "app/main.py", "description": "Main entry point for FastAPI"},
@@ -208,7 +211,7 @@ class SimulatorProvider(LLMProvider):
             })
 
         # 3. Database Agent Prompt
-        elif "schema" in prompt.lower() or "postgresql schema" in prompt.lower():
+        elif "database engineer" in sys or "database" in sys:
             return json.dumps({
                 "tables": [
                     {
@@ -224,7 +227,7 @@ class SimulatorProvider(LLMProvider):
             })
 
         # 4. Critic Agent Prompt
-        elif "critic" in prompt.lower() or "challenge" in prompt.lower():
+        elif "agent critic" in sys or "critic" in sys:
             return json.dumps({
                 "approved": True,
                 "criticisms": ["Schema and requirements align. No critical flaws found."],
@@ -232,7 +235,7 @@ class SimulatorProvider(LLMProvider):
             })
 
         # 5. Developer Coding Agent Prompt
-        elif "write code" in prompt.lower() or "developer" in prompt.lower() or "implement" in prompt.lower():
+        elif "backend engineer" in sys or "backend" in sys or "developer" in sys:
             self.developer_attempts += 1
             # First attempt: Write app code with an intentional bug (e.g. syntax error or import error in tasks endpoint)
             # This enables demonstrating the debugging / self-recovery loop
@@ -267,7 +270,7 @@ class SimulatorProvider(LLMProvider):
                 })
 
         # 6. Testing Agent Prompt
-        elif "test" in prompt.lower() or "pytest" in prompt.lower():
+        elif "qa automation" in sys or "qa" in sys or "test" in p_lower or "pytest" in p_lower:
             if self.developer_attempts <= 1:
                 return json.dumps({
                     "total": 5,
@@ -291,7 +294,7 @@ class SimulatorProvider(LLMProvider):
                 })
 
         # 7. Code Review Agent Prompt
-        elif "review" in prompt.lower() or "code review" in prompt.lower():
+        elif "code reviewer" in sys or "reviewer" in sys or "review" in p_lower:
             return json.dumps({
                 "status": "PASS",
                 "severity": "LOW",
