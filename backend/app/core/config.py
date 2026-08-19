@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     llm_provider: str = "simulator"
     llm_model: str = "llama3"
+    gemini_api_key: str | None = None
 
 
 @lru_cache
