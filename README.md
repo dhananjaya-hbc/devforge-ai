@@ -29,7 +29,7 @@ Rather than a simple linear pipeline, the system builds a **Dynamic Task Graph**
 - **Database**: PostgreSQL (SQLAlchemy ORM + Alembic Migrations)
 - **Frontend Dashboard**: React SPA (Vite + Vanilla CSS)
 - **Sandboxed Execution**: Isolated Docker containerization (`python:3.12-slim`)
-- **LLM Abstraction Layer**: Built-in support for local **Ollama** runtimes, **AWS Bedrock** (Llama 3.1 / Claude), and a high-fidelity **Simulator/Mock Provider** for local verification.
+- **LLM Abstraction Layer**: Built-in support for local **Ollama** runtimes and a high-fidelity **Simulator/Mock Provider** for local verification.
 
 ---
 
@@ -60,8 +60,7 @@ POSTGRES_PASSWORD=devforge
 POSTGRES_DB=devforge
 DATABASE_URL=postgresql+psycopg://devforge:devforge@localhost:5433/devforge
 
-# --- LLM Provider Selection ---
-# Set to 'simulator' to test out-of-the-box, or 'ollama' / 'bedrock'
+# Set to 'simulator' to test out-of-the-box, or 'ollama'
 LLM_PROVIDER=simulator
 ```
 
@@ -119,11 +118,10 @@ npm run dev
 
 ---
 
-## 5. AWS Production Deployment Configuration
+## 5. Production VPS Deployment Configuration
 
-For deploying to AWS:
-1. **Container Registry**: Push the Backend Docker image to **Amazon ECR**.
-2. **Backend Engine**: Run the container in **AWS ECS Fargate** inside a private subnet.
-3. **Database**: Provision an **Amazon RDS PostgreSQL** instance.
-4. **Static Frontend**: Deploy the React Vite static build folder to **Amazon S3** distributed via **Amazon CloudFront**.
-5. **Credentials Security**: Store AWS Bedrock connection keys and RDS database passwords in **AWS Secrets Manager**.
+For deploying to a production VPS (DigitalOcean, Hetzner, Linode, etc.):
+1. **Container Registry**: Build and push your Backend and Frontend images to any standard container registry (e.g., Docker Hub, GitHub Packages).
+2. **Database**: Set up a managed Postgres instance (e.g., Railway, Render, or a self-hosted Docker volume on your VPS).
+3. **Application Server**: Run the services using Docker Compose on any Linux VM.
+4. **Proxy & SSL**: Configure Nginx or Caddy as a reverse proxy to route public traffic and handle automatic SSL certificates (via Let's Encrypt).
