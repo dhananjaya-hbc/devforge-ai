@@ -1,10 +1,12 @@
 import pytest
 import uuid
 from app.core.database import SessionLocal
+from app.core.llm import SimulatorProvider
 from app.models.project import Project, ProjectStatus
 from app.models.task import Task, TaskStatus
 from app.models.event import Event
 from app.models.agent_run import AgentRun
+from app.orchestration import orchestrator
 from app.orchestration.orchestrator import run_project_orchestration
 
 
@@ -16,6 +18,16 @@ def db_session():
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def force_simulator(monkeypatch):
+    """Pin the orchestrator to canned responses.
+
+    Without this the test reads LLM_PROVIDER from .env and bills real API
+    calls, making it slow and dependent on network and credentials.
+    """
+    monkeypatch.setattr(orchestrator, "get_llm_provider", lambda *a, **kw: SimulatorProvider())
 
 
 def test_project_orchestration_loop(db_session):
