@@ -164,147 +164,275 @@ class SimulatorProvider(LLMProvider):
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         sys = (system_prompt or "").lower()
         p_lower = prompt.lower()
+        
+        # Check if the prompt relates to frontend, react, css, html or dashboard
+        is_frontend = any(x in p_lower or x in sys for x in ["react", "frontend", "dashboard", "css", "html", "ui"])
 
         # 1. PM/Requirements Extraction Prompt
         if "business analyst" in sys or "requirements" in sys or ("ambiguities" in p_lower and "functional_requirements" in p_lower):
-            return json.dumps({
-                "functional_requirements": [
-                    {"id": "FR-1", "description": "User registration with email and password"},
-                    {"id": "FR-2", "description": "User login generating a JWT token"},
-                    {"id": "FR-3", "description": "Retrieve tasks for the logged in user"},
-                    {"id": "FR-4", "description": "Create a new task with title, description, and status"},
-                    {"id": "FR-5", "description": "Update an existing task status, title, or description"},
-                    {"id": "FR-6", "description": "Delete a task by ID"}
-                ],
-                "non_functional_requirements": [
-                    {"id": "NFR-1", "description": "API responses under 200ms"},
-                    {"id": "NFR-2", "description": "Password hashing using bcrypt"},
-                    {"id": "NFR-3", "description": "JWT-based authentication headers"}
-                ],
-                "constraints": [
-                    {"id": "CON-1", "description": "Database must be PostgreSQL"},
-                    {"id": "CON-2", "description": "Backend framework must be FastAPI"}
-                ],
-                "ambiguities": [],
-                "acceptance_criteria": [
-                    {"id": "AC-1", "description": "Registering returns 201 Created and user metadata"},
-                    {"id": "AC-2", "description": "Creating task without Auth returns 401 Unauthorized"}
-                ]
-            })
-
-        # 2. Architect Agent Prompt
-        elif "software architect" in sys or "architect" in sys:
-            return json.dumps({
-                "modules": [
-                    {"name": "app/main.py", "description": "Main entry point for FastAPI"},
-                    {"name": "app/core/config.py", "description": "Configuration settings"},
-                    {"name": "app/core/database.py", "description": "Database engine and session"},
-                    {"name": "app/models/user.py", "description": "User SQLAlchemy entity"},
-                    {"name": "app/models/task.py", "description": "Task SQLAlchemy entity"},
-                    {"name": "app/api/auth.py", "description": "Authentication endpoints"},
-                    {"name": "app/api/tasks.py", "description": "Tasks management endpoints"},
-                    {"name": "app/schemas/user.py", "description": "User Pydantic validations"},
-                    {"name": "app/schemas/task.py", "description": "Task Pydantic validations"}
-                ],
-                "design_patterns": ["Repository pattern for database access", "Dependency Injection for DB sessions"],
-                "security_spec": "BCrypt password hashing, JWT HS256 tokens"
-            })
-
-        # 3. Database Agent Prompt
-        elif "database engineer" in sys or "database" in sys:
-            return json.dumps({
-                "tables": [
-                    {
-                        "name": "users",
-                        "sql": "CREATE TABLE users (id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, hashed_password VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT NOW());"
-                    },
-                    {
-                        "name": "tasks",
-                        "sql": "CREATE TABLE tasks (id UUID PRIMARY KEY, user_id UUID REFERENCES users(id) ON DELETE CASCADE, title VARCHAR(255) NOT NULL, description TEXT, status VARCHAR(50) DEFAULT 'PENDING', created_at TIMESTAMP DEFAULT NOW());"
-                    }
-                ],
-                "indexes": ["CREATE INDEX idx_tasks_user_id ON tasks(user_id);"]
-            })
-
-        # 4. Critic Agent Prompt
-        elif "agent critic" in sys or "critic" in sys:
-            return json.dumps({
-                "approved": True,
-                "criticisms": ["Schema and requirements align. No critical flaws found."],
-                "suggestions": ["Ensure task status has strict enum check."]
-            })
-
-        # 5. Developer Coding Agent Prompt
-        elif "backend engineer" in sys or "backend" in sys or "developer" in sys:
-            self.developer_attempts += 1
-            # First attempt: Write app code with an intentional bug (e.g. syntax error or import error in tasks endpoint)
-            # This enables demonstrating the debugging / self-recovery loop
-            if self.developer_attempts == 1:
+            if is_frontend:
                 return json.dumps({
-                    "files_to_create": [
-                        {
-                            "path": "app/models/user.py",
-                            "content": "from sqlalchemy import Column, String, DateTime\nfrom sqlalchemy.dialects.postgresql import UUID\nimport uuid\nfrom app.core.database import Base\nclass User(Base):\n    __tablename__ = 'users'\n    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)\n    email = Column(String, unique=True, nullable=False)\n    hashed_password = Column(String, nullable=False)\n"
-                        },
-                        {
-                            "path": "app/models/task.py",
-                            "content": "from sqlalchemy import Column, String, ForeignKey, Text\nfrom sqlalchemy.dialects.postgresql import UUID\nimport uuid\nfrom app.core.database import Base\nclass Task(Base):\n    __tablename__ = 'tasks'\n    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)\n    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'))\n    title = Column(String, nullable=False)\n    description = Column(Text, nullable=True)\n    status = Column(String, default='PENDING')\n"
-                        },
-                        {
-                            "path": "app/api/tasks.py",
-                            "content": "from fastapi import APIRouter, Depends, HTTPException\nfrom app.models.task import Task\n# INTENTIONAL BUG: Missing import of get_db\nrouter = APIRouter(prefix='/tasks', tags=['tasks'])\n@router.get('')\ndef list_tasks(db = Depends(get_db_session_not_defined)): # Buggy function signature\n    return []\n"
-                        }
+                    "functional_requirements": [
+                        {"id": "FR-1", "description": "Display sales metrics cards (Revenue, Orders, Conversion)"},
+                        {"id": "FR-2", "description": "Interactive chart displaying monthly sales trends"},
+                        {"id": "FR-3", "description": "Recent orders table with status badges (Completed, Pending, Cancelled)"},
+                        {"id": "FR-4", "description": "Active inventory stock level list with alert triggers"}
                     ],
-                    "message": "Generated basic FastAPI templates. Note: auth is placeholder."
-                })
-            else:
-                # Second attempt (after debugging): return corrected code
-                return json.dumps({
-                    "files_to_create": [
-                        {
-                            "path": "app/api/tasks.py",
-                            "content": "from fastapi import APIRouter, Depends\nfrom sqlalchemy.orm import Session\nfrom app.core.database import get_db\nrouter = APIRouter(prefix='/tasks', tags=['tasks'])\n@router.get('')\ndef list_tasks(db: Session = Depends(get_db)):\n    return []\n"
-                        }
+                    "non_functional_requirements": [
+                        {"id": "NFR-1", "description": "Responsive layout supporting desktop and mobile dimensions"},
+                        {"id": "NFR-2", "description": "Premium glassmorphic styling utilizing vanilla CSS variables"}
                     ],
-                    "message": "Fixed the unresolved import and function parameters in tasks endpoint."
-                })
-
-        # 6. Testing Agent Prompt
-        elif "qa automation" in sys or "qa" in sys or "test" in p_lower or "pytest" in p_lower:
-            if self.developer_attempts <= 1:
-                return json.dumps({
-                    "total": 5,
-                    "passed": 4,
-                    "failed": 1,
-                    "coverage": 80.0,
-                    "failures": [
-                        {
-                            "test_name": "test_list_tasks",
-                            "error": "NameError: name 'get_db_session_not_defined' is not defined"
-                        }
+                    "constraints": [
+                        {"id": "CON-1", "description": "Must be built as a single-page React component"},
+                        {"id": "CON-2", "description": "No external heavy chart libraries allowed, build simple native SVG charts"}
+                    ],
+                    "ambiguities": [],
+                    "acceptance_criteria": [
+                        {"id": "AC-1", "description": "Metrics cards highlight positive/negative changes"},
+                        {"id": "AC-2", "description": "Stock count below 5 units displays a warning alert badge"}
                     ]
                 })
             else:
                 return json.dumps({
-                    "total": 5,
-                    "passed": 5,
-                    "failed": 0,
-                    "coverage": 95.0,
-                    "failures": []
+                    "functional_requirements": [
+                        {"id": "FR-1", "description": "User registration with email and password"},
+                        {"id": "FR-2", "description": "User login generating a JWT token"},
+                        {"id": "FR-3", "description": "Retrieve tasks for the logged in user"},
+                        {"id": "FR-4", "description": "Create a new task with title, description, and status"},
+                        {"id": "FR-5", "description": "Update an existing task status, title, or description"},
+                        {"id": "FR-6", "description": "Delete a task by ID"}
+                    ],
+                    "non_functional_requirements": [
+                        {"id": "NFR-1", "description": "API responses under 200ms"},
+                        {"id": "NFR-2", "description": "Password hashing using bcrypt"},
+                        {"id": "NFR-3", "description": "JWT-based authentication headers"}
+                    ],
+                    "constraints": [
+                        {"id": "CON-1", "description": "Database must be PostgreSQL"},
+                        {"id": "CON-2", "description": "Backend framework must be FastAPI"}
+                    ],
+                    "ambiguities": [],
+                    "acceptance_criteria": [
+                        {"id": "AC-1", "description": "Registering returns 201 Created and user metadata"},
+                        {"id": "AC-2", "description": "Creating task without Auth returns 401 Unauthorized"}
+                    ]
                 })
+
+        # 2. Architect Agent Prompt
+        elif "software architect" in sys or "architect" in sys:
+            if is_frontend:
+                return json.dumps({
+                    "modules": [
+                        {"name": "src/App.jsx", "description": "Main layout containing dashboard grid and state management"},
+                        {"name": "src/components/Metrics.jsx", "description": "Renders summary cards for key ecommerce variables"},
+                        {"name": "src/components/OrdersTable.jsx", "description": "Renders paginated transaction records"},
+                        {"name": "src/components/Inventory.jsx", "description": "Displays active stock status list"},
+                        {"name": "src/styles/dashboard.css", "description": "Vanilla CSS file containing variables, glassmorphic styles, and layouts"}
+                    ],
+                    "design_patterns": ["State-lifting parent controller pattern", "Sub-component modular decomposition"],
+                    "security_spec": "XSS sanitization on user input renders"
+                })
+            else:
+                return json.dumps({
+                    "modules": [
+                        {"name": "app/main.py", "description": "Main entry point for FastAPI"},
+                        {"name": "app/core/config.py", "description": "Configuration settings"},
+                        {"name": "app/core/database.py", "description": "Database engine and session"},
+                        {"name": "app/models/user.py", "description": "User SQLAlchemy entity"},
+                        {"name": "app/models/task.py", "description": "Task SQLAlchemy entity"},
+                        {"name": "app/api/auth.py", "description": "Authentication endpoints"},
+                        {"name": "app/api/tasks.py", "description": "Tasks management endpoints"},
+                        {"name": "app/schemas/user.py", "description": "User Pydantic validations"},
+                        {"name": "app/schemas/task.py", "description": "Task Pydantic validations"}
+                    ],
+                    "design_patterns": ["Repository pattern for database access", "Dependency Injection for DB sessions"],
+                    "security_spec": "BCrypt password hashing, JWT HS256 tokens"
+                })
+
+        # 3. Database Agent Prompt
+        elif "database engineer" in sys or "database" in sys:
+            if is_frontend:
+                return json.dumps({
+                    "tables": [
+                        {
+                            "name": "LocalState_Orders",
+                            "sql": "React state schema representing recent orders dataset."
+                        },
+                        {
+                            "name": "LocalState_Inventory",
+                            "sql": "React state schema tracking product stock counts."
+                        }
+                    ],
+                    "indexes": ["React state memoization keys index by order UUID."]
+                })
+            else:
+                return json.dumps({
+                    "tables": [
+                        {
+                            "name": "users",
+                            "sql": "CREATE TABLE users (id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, hashed_password VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT NOW());"
+                        },
+                        {
+                            "name": "tasks",
+                            "sql": "CREATE TABLE tasks (id UUID PRIMARY KEY, user_id UUID REFERENCES users(id) ON DELETE CASCADE, title VARCHAR(255) NOT NULL, description TEXT, status VARCHAR(50) DEFAULT 'PENDING', created_at TIMESTAMP DEFAULT NOW());"
+                        }
+                    ],
+                    "indexes": ["CREATE INDEX idx_tasks_user_id ON tasks(user_id);"]
+                })
+
+        # 4. Critic Agent Prompt
+        elif "agent critic" in sys or "critic" in sys:
+            if is_frontend:
+                return json.dumps({
+                    "approved": True,
+                    "criticisms": ["Layout structure and component definitions are modular. Style guides align."],
+                    "suggestions": ["Ensure responsiveness for mobile layouts is fully verified."]
+                })
+            else:
+                return json.dumps({
+                    "approved": True,
+                    "criticisms": ["Schema and requirements align. No critical flaws found."],
+                    "suggestions": ["Ensure task status has strict enum check."]
+                })
+
+        # 5. Developer Coding Agent Prompt
+        elif "backend engineer" in sys or "backend" in sys or "developer" in sys:
+            self.developer_attempts += 1
+            if is_frontend:
+                # First attempt: Write app code with an intentional typo bug in React import to demonstrate self-healing
+                if self.developer_attempts == 1:
+                    return json.dumps({
+                        "files_to_create": [
+                            {
+                                "path": "src/styles/dashboard.css",
+                                "content": ":root {\n  --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);\n  --glass-bg: rgba(255, 255, 255, 0.03);\n  --glass-border: rgba(255, 255, 255, 0.08);\n  --text-primary: #f8fafc;\n  --text-secondary: #94a3b8;\n}\n.dashboard-container {\n  min-height: 100vh;\n  background: var(--bg-gradient);\n  color: var(--text-primary);\n  padding: 2rem;\n}\n.metric-card {\n  background: var(--glass-bg);\n  border: 1px solid var(--glass-border);\n  border-radius: 12px;\n  padding: 1.5rem;\n  transition: all 0.3s ease;\n}\n.metric-card:hover {\n  transform: translateY(-2px);\n  border-color: rgba(255,255,255,0.2);\n}\n"
+                            },
+                            {
+                                "path": "src/components/Metrics.jsx",
+                                "content": "import React from 'react';\nexport function Metrics() {\n  const data = [\n    { title: 'Total Revenue', value: '$24,580', change: '+12.5%', isUp: true },\n    { title: 'Active Orders', value: '382', change: '+8.3%', isUp: true },\n    { title: 'Conversion Rate', value: '3.2%', change: '-0.4%', isUp: false }\n  ];\n  return (\n    <div style={{ display: 'flex', gap: '1rem', width: '100%' }}>\n      {data.map((m, i) => (\n        <div key={i} className='metric-card' style={{ flex: 1 }}>\n          <h3 style={{ color: '#94a3b8', fontSize: '0.875rem' }}>{m.title}</h3>\n          <p style={{ fontSize: '1.8rem', fontWeight: 'bold', margin: '0.5rem 0' }}>{m.value}</p>\n          <span style={{ color: m.isUp ? '#10b981' : '#ef4444', fontSize: '0.875rem' }}>{m.change}</span>\n        </div>\n      ))}\n    </div>\n  );\n}\n"
+                            },
+                            {
+                                "path": "src/App.jsx",
+                                "content": "import React from 'react';\nimport { MetricsCard } from './components/Metrics'; // INTENTIONAL TYPO BUG\nexport default function App() {\n  return (\n    <div className='dashboard-container'>\n      <h1 style={{ marginBottom: '1.5rem' }}>E-Commerce Store Dashboard</h1>\n      <MetricsCard />\n    </div>\n  );\n}\n"
+                            }
+                        ],
+                        "message": "Generated e-commerce dashboard template files. App.jsx contains metrics component."
+                    })
+                else:
+                    # Second attempt (after debugging): return corrected React code
+                    return json.dumps({
+                        "files_to_create": [
+                            {
+                                "path": "src/App.jsx",
+                                "content": "import React from 'react';\nimport { Metrics } from './components/Metrics'; // FIXED TYPO BUG\nexport default function App() {\n  return (\n    <div className='dashboard-container'>\n      <h1 style={{ marginBottom: '1.5rem', fontSize: '2rem' }}>E-Commerce Store Dashboard</h1>\n      <Metrics />\n      <div style={{ marginTop: '2rem', padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px' }}>\n        <h2>Recent Orders</h2>\n        <p style={{ color: '#94a3b8' }}>Client orders logs are currently empty.</p>\n      </div>\n    </div>\n  );\n}\n"
+                            }
+                        ],
+                        "message": "Fixed the unresolved import in App.jsx."
+                    })
+            else:
+                # First attempt: Write app code with an intentional bug (e.g. syntax error or import error in tasks endpoint)
+                # This enables demonstrating the debugging / self-recovery loop
+                if self.developer_attempts == 1:
+                    return json.dumps({
+                        "files_to_create": [
+                            {
+                                "path": "app/models/user.py",
+                                "content": "from sqlalchemy import Column, String, DateTime\nfrom sqlalchemy.dialects.postgresql import UUID\nimport uuid\nfrom app.core.database import Base\nclass User(Base):\n    __tablename__ = 'users'\n    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)\n    email = Column(String, unique=True, nullable=False)\n    hashed_password = Column(String, nullable=False)\n"
+                            },
+                            {
+                                "path": "app/models/task.py",
+                                "content": "from sqlalchemy import Column, String, ForeignKey, Text\nfrom sqlalchemy.dialects.postgresql import UUID\nimport uuid\nfrom app.core.database import Base\nclass Task(Base):\n    __tablename__ = 'tasks'\n    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)\n    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'))\n    title = Column(String, nullable=False)\n    description = Column(Text, nullable=True)\n    status = Column(String, default='PENDING')\n"
+                            },
+                            {
+                                "path": "app/api/tasks.py",
+                                "content": "from fastapi import APIRouter, Depends, HTTPException\nfrom app.models.task import Task\n# INTENTIONAL BUG: Missing import of get_db\nrouter = APIRouter(prefix='/tasks', tags=['tasks'])\n@router.get('')\ndef list_tasks(db = Depends(get_db_session_not_defined)): # Buggy function signature\n    return []\n"
+                            }
+                        ],
+                        "message": "Generated basic FastAPI templates. Note: auth is placeholder."
+                    })
+                else:
+                    # Second attempt (after debugging): return corrected code
+                    return json.dumps({
+                        "files_to_create": [
+                            {
+                                "path": "app/api/tasks.py",
+                                "content": "from fastapi import APIRouter, Depends\nfrom sqlalchemy.orm import Session\nfrom app.core.database import get_db\nrouter = APIRouter(prefix='/tasks', tags=['tasks'])\n@router.get('')\ndef list_tasks(db: Session = Depends(get_db)):\n    return []\n"
+                            }
+                        ],
+                        "message": "Fixed the unresolved import and function parameters in tasks endpoint."
+                    })
+
+        # 6. Testing Agent Prompt
+        elif "qa automation" in sys or "qa" in sys or "test" in p_lower or "pytest" in p_lower:
+            if is_frontend:
+                if self.developer_attempts <= 1:
+                    return json.dumps({
+                        "total": 3,
+                        "passed": 2,
+                        "failed": 1,
+                        "coverage": 75.0,
+                        "failures": [
+                            {
+                                "test_name": "App Component Mounts",
+                                "error": "ModuleNotFoundError: Cannot find module './components/Metrics' in src/App.jsx"
+                            }
+                        ]
+                    })
+                else:
+                    return json.dumps({
+                        "total": 3,
+                        "passed": 3,
+                        "failed": 0,
+                        "coverage": 90.0,
+                        "failures": []
+                    })
+            else:
+                if self.developer_attempts <= 1:
+                    return json.dumps({
+                        "total": 5,
+                        "passed": 4,
+                        "failed": 1,
+                        "coverage": 80.0,
+                        "failures": [
+                            {
+                                "test_name": "test_list_tasks",
+                                "error": "NameError: name 'get_db_session_not_defined' is not defined"
+                            }
+                        ]
+                    })
+                else:
+                    return json.dumps({
+                        "total": 5,
+                        "passed": 5,
+                        "failed": 0,
+                        "coverage": 95.0,
+                        "failures": []
+                    })
 
         # 7. Code Review Agent Prompt
         elif "code reviewer" in sys or "reviewer" in sys or "review" in p_lower:
-            return json.dumps({
-                "status": "PASS",
-                "severity": "LOW",
-                "issues": [
-                    {"severity": "LOW", "description": "Missing docstrings in app/api/tasks.py API router."}
-                ],
-                "recommendations": [
-                    "Add docstring to API endpoints to document parameters."
-                ]
-            })
+            if is_frontend:
+                return json.dumps({
+                    "status": "PASS",
+                    "severity": "LOW",
+                    "issues": [
+                        {"severity": "LOW", "description": "Add alt/aria tags to SVG indicators for web accessibility."}
+                    ],
+                    "recommendations": [
+                        "Include accessibility properties to metrics grid values."
+                    ]
+                })
+            else:
+                return json.dumps({
+                    "status": "PASS",
+                    "severity": "LOW",
+                    "issues": [
+                        {"severity": "LOW", "description": "Missing docstrings in app/api/tasks.py API router."}
+                    ],
+                    "recommendations": [
+                        "Add docstring to API endpoints to document parameters."
+                    ]
+                })
 
         # Generic fallback
         return "Simulated text completion response."
