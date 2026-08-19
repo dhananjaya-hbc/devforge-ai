@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # Only open-weight models are permitted as the core intelligence layer.
     llm_provider: str = "groq"
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "qwen/qwen3.6-27b"
     groq_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
 

@@ -2,6 +2,7 @@ import abc
 import json
 import logging
 import re
+import time
 from collections.abc import Generator
 from typing import Any, Type
 
@@ -411,10 +412,14 @@ class GroqProvider(LLMProvider):
     """
 
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+    MAX_RETRIES = 5
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 8000):
         self.api_key = api_key
         self.model = model
+        # Reasoning models spend thousands of hidden tokens before answering;
+        # too small a budget truncates them before any JSON is emitted.
+        self.max_tokens = max_tokens
 
     def _build_payload(self, prompt: str, system_prompt: str | None, stream: bool) -> dict:
         messages = []
@@ -427,12 +432,21 @@ class GroqProvider(LLMProvider):
             "messages": messages,
             "temperature": 0.2,
             "stream": stream,
+            "max_tokens": self.max_tokens,
+            # Reasoning models (Qwen3) otherwise emit <think> blocks that break
+            # JSON mode, and the spec forbids surfacing raw chain-of-thought.
+            "reasoning_format": "hidden",
         }
         # generate_structured() appends a JSON schema; Groq's JSON mode then
         # guarantees syntactically valid JSON instead of relying on the prompt.
         if "json schema:" in prompt.lower():
             payload["response_format"] = {"type": "json_object"}
         return payload
+
+    @staticmethod
+    def _strip_reasoning(text: str) -> str:
+        """Drop <think> blocks in case a model ignores reasoning_format."""
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -441,22 +455,57 @@ class GroqProvider(LLMProvider):
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        """Seconds to wait before retrying a rate-limited request."""
+        header = response.headers.get("retry-after")
+        if header:
+            try:
+                return float(header)
+            except ValueError:
+                pass
+        # Groq states the wait inside the error message when no header is sent.
+        match = re.search(r"try again in ([\d.]+)s", response.text)
+        if match:
+            return float(match.group(1)) + 1.0
+        return min(2**attempt, 30)
+
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         payload = self._build_payload(prompt, system_prompt, stream=False)
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(self.BASE_URL, json=payload, headers=self._headers)
-                response.raise_for_status()
-                choices = response.json().get("choices", [])
-                if not choices:
-                    raise RuntimeError("Groq API returned no choices.")
-                return choices[0].get("message", {}).get("content", "")
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Groq HTTP {e.response.status_code}: {e.response.text}")
-            raise RuntimeError(f"Groq request failed ({e.response.status_code}): {e.response.text}")
-        except Exception as e:
-            logger.error(f"Groq generate error: {e}")
-            raise RuntimeError(f"Groq invocation failed: {e}")
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                with httpx.Client(timeout=120.0) as client:
+                    response = client.post(self.BASE_URL, json=payload, headers=self._headers)
+
+                    if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
+                        delay = self._retry_delay(response, attempt)
+                        logger.warning(
+                            f"Groq rate limited; retrying in {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{self.MAX_RETRIES})"
+                        )
+                        time.sleep(delay)
+                        continue
+
+                    response.raise_for_status()
+                    choices = response.json().get("choices", [])
+                    if not choices:
+                        raise RuntimeError("Groq API returned no choices.")
+                    return self._strip_reasoning(choices[0].get("message", {}).get("content", ""))
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Groq HTTP {e.response.status_code}: {e.response.text}")
+                raise RuntimeError(
+                    f"Groq request failed ({e.response.status_code}): {e.response.text}"
+                )
+            except httpx.RequestError as e:
+                if attempt < self.MAX_RETRIES - 1:
+                    logger.warning(f"Groq network error, retrying: {e}")
+                    time.sleep(min(2**attempt, 30))
+                    continue
+                raise RuntimeError(f"Groq invocation failed: {e}")
+
+        raise RuntimeError(f"Groq rate limit not cleared after {self.MAX_RETRIES} attempts.")
 
     def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
         payload = self._build_payload(prompt, system_prompt, stream=True)
