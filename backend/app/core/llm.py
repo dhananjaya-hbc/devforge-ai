@@ -437,10 +437,6 @@ class GroqProvider(LLMProvider):
             # JSON mode, and the spec forbids surfacing raw chain-of-thought.
             "reasoning_format": "hidden",
         }
-        # generate_structured() appends a JSON schema; Groq's JSON mode then
-        # guarantees syntactically valid JSON instead of relying on the prompt.
-        if "json schema:" in prompt.lower():
-            payload["response_format"] = {"type": "json_object"}
         return payload
 
     @staticmethod
