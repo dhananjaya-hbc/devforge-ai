@@ -11,9 +11,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://devforge:devforge@localhost:5432/devforge"
     host_workspace_path: str = "/Users/dhananjaya/Desktop/devforge-ai"
 
-    llm_provider: str = "simulator"
-    llm_model: str = "llama3"
-    gemini_api_key: str | None = None
+    # Only open-weight models are permitted as the core intelligence layer.
+    llm_provider: str = "groq"
+    llm_model: str = "llama-3.3-70b-versatile"
+    groq_api_key: str | None = None
+    ollama_base_url: str = "http://localhost:11434"
 
 
 @lru_cache

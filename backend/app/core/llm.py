@@ -531,23 +531,30 @@ class GeminiProvider(LLMProvider):
 
 
 def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
-    """Retrieve LLMProvider instance based on configuration."""
+    """Retrieve LLMProvider instance based on configuration.
+
+    Misconfiguration raises rather than silently degrading to the simulator,
+    so a demo can never appear to run on a real model when it is not.
+    """
     settings = get_settings()
     provider = (provider_type or settings.llm_provider).lower()
 
-    if provider == "ollama":
-        # Check settings for model; we can default to llama3
-        model = getattr(settings, "llm_model", "llama3")
-        return OllamaProvider(base_url="http://localhost:11434", model=model)
-    elif provider == "gemini":
-        api_key = settings.gemini_api_key or ""
-        model = getattr(settings, "llm_model", "gemini-1.5-flash")
-        if not api_key:
-            logger.warning("Gemini API Key is not set. Falling back to simulator.")
-            return SimulatorProvider()
-        return GeminiProvider(api_key=api_key, model=model)
+    if provider == "groq":
+        if not settings.groq_api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=groq but GROQ_API_KEY is not set. "
+                "Get a free key at https://console.groq.com/keys"
+            )
+        return GroqProvider(api_key=settings.groq_api_key, model=settings.llm_model)
+    elif provider == "ollama":
+        return OllamaProvider(base_url=settings.ollama_base_url, model=settings.llm_model)
     elif provider == "simulator":
+        logger.warning(
+            "Using SimulatorProvider: responses are canned fixtures, not model output. "
+            "Never use this for a demo or for reported metrics."
+        )
         return SimulatorProvider()
     else:
-        logger.warning(f"Unknown LLM provider: {provider}. Falling back to simulator.")
-        return SimulatorProvider()
+        raise ValueError(
+            f"Unknown LLM provider: {provider!r}. Supported: groq, ollama, simulator."
+        )
