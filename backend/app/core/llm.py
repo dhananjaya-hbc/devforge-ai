@@ -524,6 +524,54 @@ class GroqProvider(LLMProvider):
             raise RuntimeError(f"Groq streaming failed: {e}")
 
 
+class GeminiProvider(LLMProvider):
+    """Google Gemini AI Studio API provider."""
+    
+    def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
+        self.api_key = api_key
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: str | None = None) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        
+        contents = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ]
+        }
+        
+        if system_prompt:
+            contents["systemInstruction"] = {
+                "parts": [
+                    {"text": system_prompt}
+                ]
+            }
+            
+        generation_config = {"temperature": 0.2}
+        contents["generationConfig"] = generation_config
+
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(url, json=contents)
+                response.raise_for_status()
+                res_data = response.json()
+                candidates = res_data.get("candidates", [])
+                if not candidates:
+                    raise RuntimeError("Gemini API returned no candidates.")
+                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                return text
+        except Exception as e:
+            logger.error(f"Gemini generate error: {e}")
+            raise RuntimeError(f"Gemini invocation failed: {e}")
+
+    def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
+        yield self.generate(prompt, system_prompt)
+
+
 def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
     """Retrieve LLMProvider instance based on configuration.
 
@@ -540,6 +588,12 @@ def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
                 "Get a free key at https://console.groq.com/keys"
             )
         return GroqProvider(api_key=settings.groq_api_key, model=settings.llm_model)
+    elif provider == "gemini":
+        if not settings.gemini_api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=gemini but GEMINI_API_KEY is not set."
+            )
+        return GeminiProvider(api_key=settings.gemini_api_key, model=settings.llm_model)
     elif provider == "ollama":
         return OllamaProvider(base_url=settings.ollama_base_url, model=settings.llm_model)
     elif provider == "simulator":
@@ -550,5 +604,5 @@ def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
         return SimulatorProvider()
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider!r}. Supported: groq, ollama, simulator."
+            f"Unknown LLM provider: {provider!r}. Supported: groq, gemini, ollama, simulator."
         )

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     llm_provider: str = "groq"
     llm_model: str = "qwen/qwen3.6-27b"
     groq_api_key: str | None = None
+    gemini_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
 
 
