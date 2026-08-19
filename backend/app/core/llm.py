@@ -403,6 +403,82 @@ class SimulatorProvider(LLMProvider):
         yield self.generate(prompt, system_prompt)
 
 
+class GroqProvider(LLMProvider):
+    """Groq-hosted open-weight models (Llama family) via the OpenAI-compatible API.
+
+    Groq only serves models with published weights, which keeps the AI layer
+    open-source even though the inference is remote.
+    """
+
+    BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+        self.api_key = api_key
+        self.model = model
+
+    def _build_payload(self, prompt: str, system_prompt: str | None, stream: bool) -> dict:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": stream,
+        }
+        # generate_structured() appends a JSON schema; Groq's JSON mode then
+        # guarantees syntactically valid JSON instead of relying on the prompt.
+        if "json schema:" in prompt.lower():
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def generate(self, prompt: str, system_prompt: str | None = None) -> str:
+        payload = self._build_payload(prompt, system_prompt, stream=False)
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(self.BASE_URL, json=payload, headers=self._headers)
+                response.raise_for_status()
+                choices = response.json().get("choices", [])
+                if not choices:
+                    raise RuntimeError("Groq API returned no choices.")
+                return choices[0].get("message", {}).get("content", "")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Groq HTTP {e.response.status_code}: {e.response.text}")
+            raise RuntimeError(f"Groq request failed ({e.response.status_code}): {e.response.text}")
+        except Exception as e:
+            logger.error(f"Groq generate error: {e}")
+            raise RuntimeError(f"Groq invocation failed: {e}")
+
+    def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
+        payload = self._build_payload(prompt, system_prompt, stream=True)
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                with client.stream("POST", self.BASE_URL, json=payload, headers=self._headers) as r:
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            break
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if content := delta.get("content"):
+                            yield content
+        except Exception as e:
+            logger.error(f"Groq stream error: {e}")
+            raise RuntimeError(f"Groq streaming failed: {e}")
+
+
 class GeminiProvider(LLMProvider):
     """Google Gemini AI Studio API provider."""
     
