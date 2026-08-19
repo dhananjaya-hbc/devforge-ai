@@ -5,7 +5,6 @@ import re
 from collections.abc import Generator
 from typing import Any, Type
 
-import boto3
 import httpx
 from pydantic import BaseModel
 
@@ -114,44 +113,7 @@ class OllamaProvider(LLMProvider):
             raise RuntimeError(f"Ollama streaming failed: {e}")
 
 
-class BedrockProvider(LLMProvider):
-    def __init__(self, region_name: str = "us-east-1", model_id: str = "meta.llama3-1-70b-instruct-v1:0"):
-        self.model_id = model_id
-        # AWS credentials will be picked up automatically from env/role credentials
-        self.client = boto3.client("bedrock-runtime", region_name=region_name)
 
-    def generate(self, prompt: str, system_prompt: str | None = None) -> str:
-        # Llama 3 prompt format
-        formatted_prompt = ""
-        if system_prompt:
-            formatted_prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
-        else:
-            formatted_prompt += "<|begin_of_text|>"
-        formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-
-        body = json.dumps({
-            "prompt": formatted_prompt,
-            "max_gen_len": 2048,
-            "temperature": 0.2,
-            "top_p": 0.9,
-        })
-
-        try:
-            response = self.client.invoke_model(
-                body=body,
-                modelId=self.model_id,
-                accept="application/json",
-                contentType="application/json"
-            )
-            response_body = json.loads(response.get("body").read())
-            return response_body.get("generation", "")
-        except Exception as e:
-            logger.error(f"AWS Bedrock generate error: {e}")
-            raise RuntimeError(f"AWS Bedrock invocation failed: {e}")
-
-    def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
-        # Simple non-streamed fallback for bedrock streaming for simplicity
-        yield self.generate(prompt, system_prompt)
 
 
 class SimulatorProvider(LLMProvider):
@@ -450,8 +412,6 @@ def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
         # Check settings for model; we can default to llama3
         model = getattr(settings, "llm_model", "llama3")
         return OllamaProvider(base_url="http://localhost:11434", model=model)
-    elif provider == "bedrock":
-        return BedrockProvider(region_name=settings.aws_region, model_id=settings.bedrock_model_id)
     elif provider == "simulator":
         return SimulatorProvider()
     else:
