@@ -29,7 +29,15 @@ Rather than a simple linear pipeline, the system builds a **Dynamic Task Graph**
 - **Database**: PostgreSQL (SQLAlchemy ORM + Alembic Migrations)
 - **Frontend Dashboard**: React SPA (Vite + Vanilla CSS)
 - **Sandboxed Execution**: Isolated Docker containerization (`python:3.12-slim`)
-- **LLM Abstraction Layer**: Built-in support for local **Ollama** runtimes and a high-fidelity **Simulator/Mock Provider** for local verification.
+- **LLM Abstraction Layer**: Open-weight models only — **Qwen 3.6** served by Groq, or fully local **Ollama** runtimes. A Simulator/Mock provider is included strictly for offline tests.
+
+### Why the AI layer is open-source
+
+The competition requires open-source models as the core intelligence, so DevForge
+runs on **published open-weight models** (Qwen, Llama) and never on a proprietary
+API such as GPT, Claude, or Gemini. Groq is inference hosting — rented GPUs
+serving open weights — and can be swapped for local Ollama with one env var,
+since every agent depends on the `LLMProvider` interface rather than any vendor.
 
 ---
 
@@ -38,7 +46,7 @@ Rather than a simple linear pipeline, the system builds a **Dynamic Task Graph**
 Follow these steps to set up and run the complete application on your local machine:
 
 ### Step A: Start the Infrastructure via Docker Compose
-Start the Postgres database and local Ollama services in the background:
+Start the Postgres database in the background:
 ```bash
 docker compose up -d
 ```
@@ -60,9 +68,23 @@ POSTGRES_PASSWORD=devforge
 POSTGRES_DB=devforge
 DATABASE_URL=postgresql+psycopg://devforge:devforge@localhost:5433/devforge
 
-# Set to 'simulator' to test out-of-the-box, or 'ollama'
-LLM_PROVIDER=simulator
+# --- LLM (open-weight models only) ---
+LLM_PROVIDER=groq
+LLM_MODEL=qwen/qwen3.6-27b
+GROQ_API_KEY=your_key_here
 ```
+
+Get a free Groq key at [console.groq.com/keys](https://console.groq.com/keys).
+
+**Alternatives:**
+- **Fully local, no key** — install [Ollama](https://ollama.com), `ollama pull llama3.1`, then set
+  `LLM_PROVIDER=ollama` and `LLM_MODEL=llama3.1`.
+- **`LLM_PROVIDER=simulator`** returns canned fixtures for offline testing. It performs
+  no inference, so never use it for a demo or for any reported metric.
+
+> **Note on Groq's free tier:** the limit is 8,000 tokens/minute, and each agent call
+> spends roughly 4,000 (Qwen is a reasoning model). A full project run therefore
+> pauses for rate limits; the provider backs off and retries automatically.
 
 ### Step C: Setup Local Virtual Environment & Apply DB Migrations
 Generate a virtual environment on the host to run database migrations, CLI commands, and test suites:
