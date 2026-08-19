@@ -479,57 +479,6 @@ class GroqProvider(LLMProvider):
             raise RuntimeError(f"Groq streaming failed: {e}")
 
 
-class GeminiProvider(LLMProvider):
-    """Google Gemini AI Studio API provider."""
-    
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
-        self.api_key = api_key
-        self.model = model
-
-    def generate(self, prompt: str, system_prompt: str | None = None) -> str:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-        
-        contents = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ]
-        }
-        
-        if system_prompt:
-            contents["systemInstruction"] = {
-                "parts": [
-                    {"text": system_prompt}
-                ]
-            }
-            
-        generation_config = {"temperature": 0.2}
-        if "json" in prompt.lower():
-            generation_config["responseMimeType"] = "application/json"
-            
-        contents["generationConfig"] = generation_config
-
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, json=contents)
-                response.raise_for_status()
-                res_data = response.json()
-                candidates = res_data.get("candidates", [])
-                if not candidates:
-                    raise RuntimeError("Gemini API returned no candidates.")
-                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                return text
-        except Exception as e:
-            logger.error(f"Gemini generate error: {e}")
-            raise RuntimeError(f"Gemini invocation failed: {e}")
-
-    def stream(self, prompt: str, system_prompt: str | None = None) -> Generator[str, None, None]:
-        yield self.generate(prompt, system_prompt)
-
-
 def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
     """Retrieve LLMProvider instance based on configuration.
 
