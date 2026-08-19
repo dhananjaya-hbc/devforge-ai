@@ -192,8 +192,16 @@ def install_dependency(db: Session, project_id: str, package_name: str, agent_ru
 
 def run_tests(db: Session, project_id: str, agent_run_id: str | None = None) -> dict:
     start_time = time.time()
-    command = "pytest --tb=short"
-    res = run_sandbox_command(project_id, command)
+    # The sandbox image is bare Python, so pytest and the generated project's
+    # own dependencies must be installed before the suite can run at all.
+    command = (
+        "python -m pip install -q --disable-pip-version-check pytest >/dev/null 2>&1; "
+        "if [ -f requirements.txt ]; then "
+        "python -m pip install -q --disable-pip-version-check -r requirements.txt "
+        ">/dev/null 2>&1 || true; fi; "
+        "python -m pytest --tb=short -q"
+    )
+    res = run_sandbox_command(project_id, command, timeout=300)
     
     status = "SUCCESS" if res["exit_code"] == 0 else "FAILED"
     output = f"stdout:\n{res['stdout']}\n\nstderr:\n{res['stderr']}"

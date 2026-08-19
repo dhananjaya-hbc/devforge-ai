@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from typing import Any, List
 from pydantic import BaseModel, Field
@@ -12,6 +13,7 @@ from app.models.test_run import TestRun
 from app.models.code_review import CodeReview
 from app.models.memory_entry import MemoryEntry
 from app.models.artifact import Artifact
+from app.services.pytest_parser import parse_pytest_output
 from app.tools.tools import create_file, list_files, read_file, run_tests
 from app.services.events import log_event
 
@@ -333,15 +335,26 @@ class TestingAgent(BaseAgent):
 
         # Run pytest inside sandbox
         test_res = run_tests(self.db, str(self.project_id), str(agent_run_id))
-        
-        # Parse output using LLM
-        prompt = (
-            f"Parse this pytest execution output:\n\n{test_res['stdout']}\n{test_res['stderr']}\n\n"
-            f"Return JSON mapping total, passed, failed, coverage, and failures details."
+
+        # Counts come from the pytest output itself. An LLM must never be asked
+        # to report them, or a "passing" run could be reported without any
+        # test having actually passed.
+        parsed = parse_pytest_output(
+            test_res["stdout"], test_res["stderr"], test_res["exit_code"]
         )
-        sys_prompt = "You are a QA automation agent. Extract totals and failures from test outputs."
-        
-        res: TestingOutput = self.llm.generate_structured(prompt, TestingOutput, sys_prompt)
+        res = TestingOutput(
+            total=parsed["total"],
+            passed=parsed["passed"],
+            failed=parsed["failed"],
+            coverage=parsed["coverage"],
+            failures=[TestRunFailure(**f) for f in parsed["failures"]],
+        )
+
+        if not parsed["parse_ok"]:
+            logger.warning(
+                f"Unparseable pytest output for project {self.project_id} "
+                f"(exit {test_res['exit_code']}); recording as a failed run."
+            )
 
         # Save test run database model
         run = TestRun(
@@ -430,4 +443,3 @@ class CriticAgent(BaseAgent):
         )
 
         return res.model_dump()
-import os
