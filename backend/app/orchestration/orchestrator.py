@@ -75,7 +75,12 @@ def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
         try:
             pm.execute(input_payload={"goal": project.goal})
             # Reload tasks
-            tasks = db.query(Task).filter(Task.project_id == project_id).all()
+            tasks = (
+            db.query(Task)
+            .filter(Task.project_id == project_id)
+            .order_by(Task.priority.desc(), Task.created_at)
+            .all()
+        )
         except Exception as e:
             project.status = ProjectStatus.FAILED
             db.commit()
@@ -90,9 +95,34 @@ def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
 
     while loop_count < max_loops:
         loop_count += 1
-        
+
+        # 0. Honour pause/cancel requested from the API mid-run. Without this
+        #    the buttons only changed a badge while the run carried on.
+        db.refresh(project)
+        if project.status == ProjectStatus.PAUSED:
+            log_event(
+                db,
+                project_id=project_id,
+                event_type="PROJECT_PAUSED",
+                message="Execution paused. Resume to continue from the current task graph.",
+            )
+            return
+        if project.status == ProjectStatus.CANCELLED:
+            log_event(
+                db,
+                project_id=project_id,
+                event_type="PROJECT_FAILED",
+                message="Execution cancelled by user.",
+            )
+            return
+
         # 1. Reload all tasks from database
-        tasks = db.query(Task).filter(Task.project_id == project_id).all()
+        tasks = (
+            db.query(Task)
+            .filter(Task.project_id == project_id)
+            .order_by(Task.priority.desc(), Task.created_at)
+            .all()
+        )
         
         # 2. Check if all tasks are completed
         all_completed = all(t.status == TaskStatus.COMPLETED for t in tasks)
@@ -146,7 +176,9 @@ def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
                 )
                 break
             else:
-                # Wait or yield, let background workers run. For MVP, we run synchronously.
+                # Waiting is not progress, so it must not consume the loop
+                # budget; otherwise ~50s of waiting silently kills a project.
+                loop_count -= 1
                 time.sleep(1)
                 continue
 
