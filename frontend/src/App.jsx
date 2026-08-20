@@ -27,7 +27,8 @@ const AGENT_CLASSES = {
   critic: 'critic',
 };
 
-function agentClass(name = '') {
+function agentClass(name) {
+  if (!name) return '';
   const key = Object.keys(AGENT_CLASSES).find((k) => name.toLowerCase().includes(k));
   return key ? AGENT_CLASSES[key] : '';
 }
