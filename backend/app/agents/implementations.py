@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, List
 from pydantic import BaseModel, Field
@@ -22,6 +23,65 @@ logger = logging.getLogger(__name__)
 # Prompts must stay well inside the provider's request-size limit; agents
 # otherwise grow their context unbounded and the request is rejected (HTTP 413).
 MAX_CONTEXT_CHARS = 6000
+
+
+FILE_BLOCK_INSTRUCTIONS = """Return every file using EXACTLY this format, and nothing else:
+
+### FILE: path/to/file.py
+```
+<the complete file contents>
+```
+
+Repeat that block for each file. Do not add commentary before or after the blocks.
+Do not wrap your answer in JSON."""
+
+# "### FILE: app/main.py" followed by a fenced block holding the file contents.
+_FILE_BLOCK = re.compile(
+    r"^[ \t]*#{2,4}\s*FILE:\s*(?P<path>\S+?)[ \t]*\r?\n"  # header
+    r"[ \t]*```[^\n]*\r?\n"  # opening fence, optional language
+    r"(?P<body>.*?)"
+    r"\r?\n[ \t]*```",  # closing fence
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _clean_body(body: str) -> str:
+    """Strip stray fence lines a model leaves inside a block.
+
+    An empty or nested fence otherwise lands in the file itself and turns a
+    valid module into a SyntaxError on the first line.
+    """
+    lines = body.split("\n")
+    while lines and lines[0].strip().startswith("```"):
+        lines.pop(0)
+    while lines and lines[-1].strip().startswith("```"):
+        lines.pop()
+    return "\n".join(lines).strip("\n")
+
+
+def parse_file_blocks(text: str) -> list[tuple[str, str]]:
+    """Extract (path, content) pairs from delimited plain-text model output.
+
+    Preferred over JSON for source code: embedding code in a JSON string needs
+    heavy escaping, which is where models reliably emit malformed output.
+    """
+    files: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for match in _FILE_BLOCK.finditer(text or ""):
+        path = match.group("path").strip().strip("`\"'")
+        # Reject anything that would escape the sandbox workspace.
+        if not path or path.startswith(("/", "~")) or ".." in path:
+            logger.warning(f"Skipping unsafe generated path: {path!r}")
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        content = _clean_body(match.group("body"))
+        # A trailing newline keeps generated files POSIX-clean.
+        files.append((path, content + "\n" if content else ""))
+
+    return files
 
 
 def clip(text: str, limit: int = MAX_CONTEXT_CHARS) -> str:
@@ -206,8 +266,9 @@ class ArchitectAgent(BaseAgent):
 
         # Save architecture to memory (compact layout to avoid Groq 413 Payload Too Large)
         essential_arch = {
-            "functional_requirements": res.functional_requirements,
-            "modules": [{"name": m.name, "description": m.description} for m in res.modules]
+            "modules": [{"name": m.name, "description": m.description} for m in res.modules],
+            "design_patterns": res.design_patterns,
+            "security_spec": res.security_spec,
         }
         mem = MemoryEntry(
             project_id=self.project_id,
@@ -282,18 +343,33 @@ class DeveloperAgent(BaseAgent):
             )
 
         prompt = (
-            f"Generate backend application code and write it to disk. Database Schema details:\n{clip(schema_info, 3000)}"
+            f"Generate backend application code. Database schema details:\n{clip(schema_info, 3000)}"
             f"{test_fail_log}\n"
-            f"Write the required Python FastAPI models, routers, and main.py files."
+            f"Write the required Python FastAPI models, routers, and main.py files.\n"
+            f"Every module you import must exist as one of the files you emit.\n\n"
+            f"{FILE_BLOCK_INSTRUCTIONS}"
         )
-        sys_prompt = "You are a senior backend engineer. Implement cleanly, import correctly, and avoid unresolved symbols."
-        
-        res: DeveloperOutput = self.llm.generate_structured(prompt, DeveloperOutput, sys_prompt)
+        sys_prompt = (
+            "You are a senior backend engineer. Implement cleanly, import correctly, "
+            "and avoid unresolved symbols."
+        )
+
+        # Source code is emitted as delimited plain text rather than JSON: the
+        # escaping required to embed code in a JSON string is where models
+        # reliably produce malformed output on long files.
+        raw = self.llm.generate(prompt, sys_prompt)
+        files = parse_file_blocks(raw)
+
+        if not files:
+            logger.warning("No file blocks parsed from developer output; falling back to JSON mode.")
+            res: DeveloperOutput = self.llm.generate_structured(prompt, DeveloperOutput, sys_prompt)
+            files = [(f.path, f.content) for f in res.files_to_create]
+            message = res.message
+        else:
+            message = f"Generated {len(files)} file(s)."
 
         created_files = []
-        for file in res.files_to_create:
-            path = file.path
-            content = file.content
+        for path, content in files:
             create_file(self.db, str(self.project_id), path, content, str(agent_run_id))
             
             # Save or update file artifact in the database
@@ -315,7 +391,7 @@ class DeveloperAgent(BaseAgent):
                 message=f"Developer Agent created code file: {path}."
             )
 
-        return {"files_written": created_files, "message": res.message}
+        return {"files_written": created_files, "message": message}
 
 
 class TestingAgent(BaseAgent):
@@ -345,7 +421,9 @@ class TestingAgent(BaseAgent):
         create_file(self.db, str(self.project_id), test_file_path, test_code, str(agent_run_id))
         
         # Also write a standard requirements.txt if not exists
-        reqs_content = "fastapi\nuvicorn\nsqlalchemy\npytest\n"
+        # httpx is required by fastapi.testclient; without it every generated
+        # test suite fails at import rather than on its own merits.
+        reqs_content = "fastapi\nuvicorn\nsqlalchemy\npytest\nhttpx\n"
         create_file(self.db, str(self.project_id), "requirements.txt", reqs_content, str(agent_run_id))
 
         log_event(

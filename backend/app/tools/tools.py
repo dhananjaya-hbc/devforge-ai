@@ -195,7 +195,10 @@ def run_tests(db: Session, project_id: str, agent_run_id: str | None = None) -> 
     # The sandbox image is bare Python, so pytest and the generated project's
     # own dependencies must be installed before the suite can run at all.
     command = (
-        "python -m pip install -q --disable-pip-version-check pytest >/dev/null 2>&1; "
+        # httpx backs fastapi.testclient. Some starlette builds want the httpx2
+        # distribution instead, so try it but never let its absence stop the run.
+        "python -m pip install -q --disable-pip-version-check pytest httpx >/dev/null 2>&1; "
+        "python -m pip install -q --disable-pip-version-check httpx2 >/dev/null 2>&1 || true; "
         "if [ -f requirements.txt ]; then "
         "python -m pip install -q --disable-pip-version-check -r requirements.txt "
         ">/dev/null 2>&1 || true; fi; "
