@@ -44,6 +44,19 @@ class BaseAgent(abc.ABC):
             agent=agent_name
         )
 
+        # Surface provider backoff to the dashboard: a silent multi-minute wait
+        # is indistinguishable from a frozen run.
+        def _report_wait(message: str) -> None:
+            log_event(
+                self.db,
+                project_id=self.project_id,
+                event_type="AGENT_WAITING",
+                message=message,
+                agent=agent_name,
+            )
+
+        self.llm.retry_listener = _report_wait
+
         try:
             output = self._run(task, input_payload, run_entry.id)
             
@@ -78,6 +91,9 @@ class BaseAgent(abc.ABC):
                 payload={"error": str(e)}
             )
             raise e
+
+        finally:
+            self.llm.retry_listener = None
 
     @abc.abstractmethod
     def _run(self, task: Any | None, input_payload: dict | None, agent_run_id: uuid.UUID) -> dict:

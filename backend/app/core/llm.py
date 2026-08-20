@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class LLMProvider(abc.ABC):
+    # Optional hook so a caller can report progress (e.g. rate-limit waits) to
+    # the user. Without it a long backoff is indistinguishable from a hang.
+    retry_listener = None
+
+    def _notify(self, message: str) -> None:
+        if self.retry_listener is not None:
+            try:
+                self.retry_listener(message)
+            except Exception:
+                logger.debug("retry_listener raised; ignoring", exc_info=True)
+
     @abc.abstractmethod
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         """Generate text from prompt."""
@@ -413,6 +424,10 @@ class GroqProvider(LLMProvider):
 
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
     MAX_RETRIES = 5
+    # Groq can ask for waits of several minutes once the per-minute token
+    # bucket is deeply drained. Sleeping that long is indistinguishable from a
+    # hang, so past this point fail with an explanation instead.
+    MAX_RETRY_WAIT_SECONDS = 90
 
     def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 3500):
         self.api_key = api_key
@@ -519,9 +534,23 @@ class GroqProvider(LLMProvider):
 
                     if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
                         delay = self._retry_delay(response, attempt)
+
+                        if delay > self.MAX_RETRY_WAIT_SECONDS:
+                            raise RuntimeError(
+                                f"Groq rate limit exhausted: the API asked to wait "
+                                f"{delay:.0f}s, beyond the {self.MAX_RETRY_WAIT_SECONDS}s "
+                                f"this client will wait. The per-minute token budget is "
+                                f"drained. Wait a few minutes, use a smaller model, or "
+                                f"upgrade the plan at https://console.groq.com/settings/billing"
+                            )
+
                         logger.warning(
-                            f"Groq rate limited; retrying in {delay:.1f}s "
+                            f"Groq rate limited; waiting {delay:.1f}s "
                             f"(attempt {attempt + 1}/{self.MAX_RETRIES})"
+                        )
+                        self._notify(
+                            f"Rate limited by the model API. Waiting {delay:.0f}s before "
+                            f"retrying (attempt {attempt + 1}/{self.MAX_RETRIES})."
                         )
                         time.sleep(delay)
                         continue
