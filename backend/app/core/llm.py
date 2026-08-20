@@ -468,11 +468,12 @@ class GroqProvider(LLMProvider):
         return min(2**attempt, 30)
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
-        payload = self._build_payload(prompt, system_prompt, stream=False)
-
+        logger.info(f"[GROQ] Generate prompt_len={len(prompt)} sys_len={len(system_prompt or '')}")
         for attempt in range(self.MAX_RETRIES):
             try:
                 with httpx.Client(timeout=120.0) as client:
+                    payload = self._build_payload(prompt, system_prompt, stream=False)
+                    logger.info(f"[GROQ] JSON payload size: {len(json.dumps(payload))} bytes")
                     response = client.post(self.BASE_URL, json=payload, headers=self._headers)
 
                     if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
