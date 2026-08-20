@@ -433,10 +433,11 @@ class GroqProvider(LLMProvider):
             "temperature": 0.2,
             "stream": stream,
             "max_tokens": self.max_tokens,
-            # Reasoning models (Qwen3) otherwise emit <think> blocks that break
-            # JSON mode, and the spec forbids surfacing raw chain-of-thought.
-            "reasoning_format": "hidden",
         }
+        # Only set reasoning_format for reasoning models that support it.
+        # General-purpose routed models (e.g. groq/compound) will error if this key is present.
+        if "qwen" in self.model.lower() or "deepseek" in self.model.lower():
+            payload["reasoning_format"] = "hidden"
         return payload
 
     @staticmethod
