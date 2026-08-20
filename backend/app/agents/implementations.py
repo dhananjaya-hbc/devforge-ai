@@ -19,6 +19,20 @@ from app.services.events import log_event
 
 logger = logging.getLogger(__name__)
 
+# Prompts must stay well inside the provider's request-size limit; agents
+# otherwise grow their context unbounded and the request is rejected (HTTP 413).
+MAX_CONTEXT_CHARS = 6000
+
+
+def clip(text: str, limit: int = MAX_CONTEXT_CHARS) -> str:
+    """Trim oversized context, keeping the most recent/relevant tail marked."""
+    if not text or len(text) <= limit:
+        return text or ""
+    head = text[: limit // 2]
+    tail = text[-limit // 2 :]
+    omitted = len(text) - limit
+    return f"{head}\n\n... [{omitted} characters omitted] ...\n\n{tail}"
+
 # --- Pydantic Schemas for LLM Validation ---
 
 class RequirementsOutput(BaseModel):
@@ -185,7 +199,7 @@ class ArchitectAgent(BaseAgent):
         ).first()
         requirements = req_memory.value if req_memory else "{}"
 
-        prompt = f"Design architecture modules and structure based on requirements:\n{requirements}"
+        prompt = f"Design architecture modules and structure based on requirements:\n{clip(requirements)}"
         sys_prompt = "You are a software architect. Define layout and modular design."
         
         res: ArchitectureOutput = self.llm.generate_structured(prompt, ArchitectureOutput, sys_prompt)
@@ -223,7 +237,7 @@ class DatabaseAgent(BaseAgent):
         ).first()
         architecture = arch_memory.value if arch_memory else "{}"
 
-        prompt = f"Design SQL schema based on architecture:\n{architecture}"
+        prompt = f"Design SQL schema based on architecture:\n{clip(architecture)}"
         sys_prompt = "You are a database engineer. Produce PostgreSQL schemas and create scripts."
         
         res: DatabaseOutput = self.llm.generate_structured(prompt, DatabaseOutput, sys_prompt)
@@ -262,10 +276,13 @@ class DeveloperAgent(BaseAgent):
         ).order_by(TestRun.created_at.desc()).first()
         
         if last_test_run and last_test_run.failed > 0:
-            test_fail_log = f"\nTesting failed previously. Pytest output:\n{last_test_run.stdout}\nFailures: {last_test_run.failures}"
+            test_fail_log = (
+                f"\nTesting failed previously. Pytest output:\n{clip(last_test_run.stdout, 3000)}"
+                f"\nFailures: {clip(str(last_test_run.failures), 1500)}"
+            )
 
         prompt = (
-            f"Generate backend application code and write it to disk. Database Schema details:\n{schema_info}"
+            f"Generate backend application code and write it to disk. Database Schema details:\n{clip(schema_info, 3000)}"
             f"{test_fail_log}\n"
             f"Write the required Python FastAPI models, routers, and main.py files."
         )
@@ -401,7 +418,12 @@ class CodeReviewAgent(BaseAgent):
     def _run(self, task: Task | None, input_payload: dict | None, agent_run_id: uuid.UUID) -> dict:
         # Load developer artifacts
         artifacts = self.db.query(Artifact).filter(Artifact.project_id == self.project_id).all()
-        code_snippets = "\n\n".join([f"--- File: {art.path} ---\n{art.content}" for art in artifacts])
+        code_snippets = clip(
+            "\n\n".join(
+                f"--- File: {art.path} ---\n{clip(art.content or '', 2000)}" for art in artifacts
+            ),
+            12000,
+        )
 
         prompt = f"Perform full code review on the following source files:\n\n{code_snippets}"
         sys_prompt = "You are a Principal Code Reviewer. Audit security, architecture, performance, and validation concerns."

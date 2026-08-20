@@ -157,7 +157,7 @@ def test_factory_raises_when_groq_key_missing(monkeypatch):
 
 def test_factory_rejects_unknown_provider():
     with pytest.raises(ValueError, match="Unknown LLM provider"):
-        get_llm_provider("gemini")
+        get_llm_provider("some-unregistered-provider")
 
 
 def test_factory_returns_simulator_only_when_asked():

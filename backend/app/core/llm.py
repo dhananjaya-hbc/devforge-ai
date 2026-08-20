@@ -414,14 +414,18 @@ class GroqProvider(LLMProvider):
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
     MAX_RETRIES = 5
 
-    def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 8000):
+    def __init__(self, api_key: str, model: str = "qwen/qwen3.6-27b", max_tokens: int = 3500):
         self.api_key = api_key
         self.model = model
-        # Reasoning models spend thousands of hidden tokens before answering;
-        # too small a budget truncates them before any JSON is emitted.
+        # max_tokens is *reserved* against the per-minute token budget, so it
+        # must leave room for the prompt: on Groq's free tier (8000 TPM) a
+        # reservation of 8000 makes every request fail as "too large".
+        # It still has to fit a reasoning model's hidden tokens (~3000).
         self.max_tokens = max_tokens
 
-    def _build_payload(self, prompt: str, system_prompt: str | None, stream: bool) -> dict:
+    def _build_payload(
+        self, prompt: str, system_prompt: str | None, stream: bool, max_tokens: int | None = None
+    ) -> dict:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -432,17 +436,24 @@ class GroqProvider(LLMProvider):
             "messages": messages,
             "temperature": 0.2,
             "stream": stream,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
         }
         # Only set reasoning_format for reasoning models that support it.
         # General-purpose routed models (e.g. groq/compound) will error if this key is present.
         if "qwen" in self.model.lower() or "deepseek" in self.model.lower():
             payload["reasoning_format"] = "hidden"
+
+        # generate_structured() appends a JSON schema; JSON mode then guarantees
+        # syntactically valid JSON rather than relying on the model obeying the
+        # prompt. Routed systems (groq/compound) do not support it.
+        if "json schema:" in prompt.lower() and not self.model.startswith("groq/"):
+            payload["response_format"] = {"type": "json_object"}
         return payload
 
     @staticmethod
     def _strip_reasoning(text: str) -> str:
         """Drop <think> blocks in case a model ignores reasoning_format."""
+        # (see _halve below for oversized-prompt recovery)
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     @property
@@ -451,6 +462,21 @@ class GroqProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    @staticmethod
+    def _halve(prompt: str) -> str:
+        """Cut a prompt roughly in half, keeping the start and the end.
+
+        The trailing JSON schema instruction matters as much as the leading
+        task description, so both ends are preserved and the middle is dropped.
+        """
+        if len(prompt) < 2000:
+            return prompt
+        keep = len(prompt) // 4
+        return (
+            f"{prompt[:keep]}\n\n... [context truncated to fit the request limit] ...\n\n"
+            f"{prompt[-keep:]}"
+        )
 
     @staticmethod
     def _retry_delay(response: httpx.Response, attempt: int) -> float:
@@ -469,12 +495,27 @@ class GroqProvider(LLMProvider):
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         logger.info(f"[GROQ] Generate prompt_len={len(prompt)} sys_len={len(system_prompt or '')}")
+        budget = self.max_tokens
+
         for attempt in range(self.MAX_RETRIES):
             try:
                 with httpx.Client(timeout=120.0) as client:
-                    payload = self._build_payload(prompt, system_prompt, stream=False)
+                    payload = self._build_payload(prompt, system_prompt, stream=False, max_tokens=budget)
                     logger.info(f"[GROQ] JSON payload size: {len(json.dumps(payload))} bytes")
                     response = client.post(self.BASE_URL, json=payload, headers=self._headers)
+
+                    # 413 counts prompt tokens *plus* the max_tokens reservation
+                    # against the per-minute budget, so shrinking the prompt alone
+                    # never clears it. Reduce both and retry rather than failing
+                    # the task outright.
+                    if response.status_code == 413 and attempt < self.MAX_RETRIES - 1:
+                        prompt = self._halve(prompt)
+                        budget = max(1024, budget // 2)
+                        logger.warning(
+                            f"Groq rejected the request as too large; retrying with "
+                            f"prompt={len(prompt)} chars, max_tokens={budget}."
+                        )
+                        continue
 
                     if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
                         delay = self._retry_delay(response, attempt)
