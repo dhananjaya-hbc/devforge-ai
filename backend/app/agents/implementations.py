@@ -190,11 +190,15 @@ class ArchitectAgent(BaseAgent):
         
         res: ArchitectureOutput = self.llm.generate_structured(prompt, ArchitectureOutput, sys_prompt)
 
-        # Save architecture to memory
+        # Save architecture to memory (compact layout to avoid Groq 413 Payload Too Large)
+        essential_arch = {
+            "functional_requirements": res.functional_requirements,
+            "modules": [{"name": m.name, "description": m.description} for m in res.modules]
+        }
         mem = MemoryEntry(
             project_id=self.project_id,
             key="architecture",
-            value=res.model_dump_json()
+            value=json.dumps(essential_arch)
         )
         self.db.add(mem)
         self.db.commit()
@@ -228,11 +232,12 @@ class DatabaseAgent(BaseAgent):
         sql_content = "\n\n".join([table.sql for table in res.tables]) + "\n\n" + "\n".join(res.indexes)
         create_file(self.db, str(self.project_id), "schema.sql", sql_content, str(agent_run_id))
 
-        # Save schema to Memory
+        # Save schema to Memory (essential schemas only to avoid Groq 413 Payload Too Large)
+        essential_schema = [{"name": t.name, "sql": t.sql} for t in res.tables]
         mem = MemoryEntry(
             project_id=self.project_id,
             key="database_schema",
-            value=res.model_dump_json()
+            value=json.dumps(essential_schema)
         )
         self.db.add(mem)
         self.db.commit()
