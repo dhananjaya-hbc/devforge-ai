@@ -3,9 +3,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 const API_BASE = 'http://localhost:8000/api';
 
 const EXAMPLE_GOALS = [
-  'Build a task management REST API with authentication.',
-  'Build a URL shortener API with click analytics.',
-  'Build a blog API with posts, comments, and tags.',
+  { label: 'Task API', goal: 'Build a task management REST API with authentication.' },
+  { label: 'URL shortener', goal: 'Build a URL shortener API with click analytics.' },
+  { label: 'Blog API', goal: 'Build a blog API with posts, comments, and tags.' },
 ];
 
 const TABS = [
@@ -323,11 +323,15 @@ function App() {
               <span className="field-hint">Describe the goal in plain language. ⌘↵ to submit.</span>
             </div>
 
-            <div className="chips">
-              {EXAMPLE_GOALS.map((goal) => (
-                <button key={goal} type="button" className="chip" onClick={() => setNewGoal(goal)}>
-                  {goal.replace('Build a ', '').replace('.', '')}
-                </button>
+            <div className="examples">
+              <span className="examples-label">Try</span>
+              {EXAMPLE_GOALS.map(({ label, goal }, i) => (
+                <React.Fragment key={label}>
+                  {i > 0 && <span className="examples-sep">·</span>}
+                  <button type="button" className="example-link" onClick={() => setNewGoal(goal)}>
+                    {label}
+                  </button>
+                </React.Fragment>
               ))}
             </div>
 
