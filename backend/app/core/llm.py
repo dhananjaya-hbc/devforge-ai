@@ -527,13 +527,14 @@ class GroqProvider(LLMProvider):
 class GeminiProvider(LLMProvider):
     """Google Gemini AI Studio API provider."""
     
-    MAX_RETRIES = 5
+    MAX_RETRIES = 10
 
     def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
         self.api_key = api_key
         self.model = model
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> str:
+        import random
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         
         contents = {
@@ -562,10 +563,10 @@ class GeminiProvider(LLMProvider):
                     response = client.post(url, json=contents)
                     
                     if response.status_code == 429 and attempt < self.MAX_RETRIES - 1:
-                        delay = min(2**attempt * 5, 60) + 1.0
+                        delay = min(2**attempt * 10, 60) + random.uniform(1.0, 5.0)
                         logger.warning(
-                            f"Gemini rate limited (429); retrying in {delay:.1f}s "
-                            f"(attempt {attempt + 1}/{self.MAX_RETRIES})"
+                            f"Gemini rate limited (429). Response body: {response.text[:300]}. "
+                            f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.MAX_RETRIES})"
                         )
                         time.sleep(delay)
                         continue
@@ -579,8 +580,9 @@ class GeminiProvider(LLMProvider):
                     return text
             except Exception as e:
                 if attempt < self.MAX_RETRIES - 1:
-                    logger.warning(f"Gemini error, retrying: {e}")
-                    time.sleep(min(2**attempt * 5, 60) + 1.0)
+                    delay = min(2**attempt * 10, 60) + random.uniform(1.0, 5.0)
+                    logger.warning(f"Gemini error, retrying in {delay:.1f}s: {e}")
+                    time.sleep(delay)
                     continue
                 logger.error(f"Gemini generate error: {e}")
                 raise RuntimeError(f"Gemini invocation failed: {e}")
