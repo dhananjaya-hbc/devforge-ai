@@ -160,64 +160,179 @@ class CriticOutput(BaseModel):
     suggestions: List[str] = Field(default_factory=list)
 
 
+class PlannedTask(BaseModel):
+    key: str
+    title: str
+    agent: str
+    description: str = ""
+    depends_on: List[str] = Field(default_factory=list)
+
+
+class PlanOutput(BaseModel):
+    tasks: List[PlannedTask] = Field(default_factory=list)
+
+
+# The agents the planner may assign work to. ProjectManagerAgent is excluded:
+# it builds the graph rather than appearing in it.
+ASSIGNABLE_AGENTS = {
+    "RequirementsAgent": "extracts functional requirements and acceptance criteria",
+    "ArchitectAgent": "designs modules, layers and design patterns",
+    "DatabaseAgent": "designs the database schema and SQL",
+    "DeveloperAgent": "writes the application source files",
+    "TestingAgent": "writes and executes tests in a sandbox",
+    "CodeReviewAgent": "audits security, structure and error handling",
+    "CriticAgent": "challenges the plan and design for gaps and contradictions",
+}
+
+# Used when the planner is unavailable or returns an unusable graph, so a run
+# always has a workable backbone rather than failing outright.
+DEFAULT_PLAN = [
+    PlannedTask(key="requirements", title="Analyze requirements and acceptance criteria",
+                agent="RequirementsAgent"),
+    PlannedTask(key="architecture", title="Design software architecture and application layers",
+                agent="ArchitectAgent", depends_on=["requirements"]),
+    PlannedTask(key="database", title="Design database schema and SQL creation scripts",
+                agent="DatabaseAgent", depends_on=["architecture"]),
+    PlannedTask(key="critique", title="Challenge the design before implementation begins",
+                agent="CriticAgent", depends_on=["architecture", "database"]),
+    PlannedTask(key="developer", title="Implement the API endpoints, schemas and models",
+                agent="DeveloperAgent", depends_on=["database"]),
+    PlannedTask(key="testing", title="Generate and execute the test suite",
+                agent="TestingAgent", depends_on=["developer"]),
+    PlannedTask(key="review", title="Review the generated code for defects and risks",
+                agent="CodeReviewAgent", depends_on=["testing"]),
+]
+
+
 # --- Agents Implementations ---
 
 class ProjectManagerAgent(BaseAgent):
-    """Orchestrates tasks, dependencies, and coordinates execution phases."""
-    
+    """Plans the task graph: decides what work is needed and in what order."""
+
+    def _plan_with_llm(self, goal: str) -> list[PlannedTask] | None:
+        """Ask the model for a task graph, or return None if it is unusable."""
+        agent_menu = "\n".join(f"  - {name}: {desc}" for name, desc in ASSIGNABLE_AGENTS.items())
+        prompt = (
+            f"Plan the work needed to deliver this software goal:\n{goal}\n\n"
+            f"Available agents:\n{agent_menu}\n\n"
+            f"Rules:\n"
+            f"- Give each task a short lowercase key (e.g. 'requirements').\n"
+            f"- depends_on may only reference keys of EARLIER tasks in the list.\n"
+            f"- Assign every task to one of the agent names listed above.\n"
+            f"- Include analysis, implementation, and verification work.\n"
+            f"- Between 4 and 8 tasks."
+        )
+        sys_prompt = (
+            "You are a technical project manager. Break a software goal into an ordered "
+            "graph of tasks with explicit dependencies."
+        )
+
+        try:
+            plan: PlanOutput = self.llm.generate_structured(prompt, PlanOutput, sys_prompt)
+        except Exception as e:
+            logger.warning(f"Planner call failed, using the default plan: {e}")
+            return None
+
+        tasks = self._validate_plan(plan.tasks)
+        if not tasks:
+            logger.warning("Planner returned an unusable graph; using the default plan.")
+        return tasks
+
+    @staticmethod
+    def _validate_plan(tasks: list["PlannedTask"]) -> list["PlannedTask"] | None:
+        """Reject a plan the orchestrator could not execute.
+
+        Model output is untrusted: an unknown agent name would stall the graph
+        forever, and a forward reference could introduce a dependency cycle.
+        """
+        if not 2 <= len(tasks) <= 12:
+            return None
+
+        seen: set[str] = set()
+        for task in tasks:
+            if task.agent not in ASSIGNABLE_AGENTS:
+                logger.warning(f"Plan rejected: unknown agent {task.agent!r}")
+                return None
+            if not task.key or task.key in seen:
+                logger.warning(f"Plan rejected: duplicate or empty key {task.key!r}")
+                return None
+            # Only backward references, which makes cycles impossible by construction.
+            for dep in task.depends_on:
+                if dep not in seen:
+                    logger.warning(f"Plan rejected: {task.key!r} depends on unknown {dep!r}")
+                    return None
+            seen.add(task.key)
+
+        # A plan that never writes or verifies code cannot deliver the goal.
+        agents = {t.agent for t in tasks}
+        if "DeveloperAgent" not in agents or "TestingAgent" not in agents:
+            logger.warning("Plan rejected: missing implementation or verification work.")
+            return None
+
+        return tasks
+
     def _run(self, task: Task | None, input_payload: dict | None, agent_run_id: uuid.UUID) -> dict:
         goal = input_payload.get("goal") if input_payload else ""
         if not goal:
             raise ValueError("No project goal provided to Project Manager Agent.")
 
-        logger.info(f"Project Manager creating task graph for goal: {goal}")
+        logger.info(f"Project Manager planning task graph for goal: {goal}")
 
-        # Define the phases with dependencies
-        # Requirements -> Architect -> DB -> Developer -> Testing -> Review
-        tasks_definition = [
-            ("requirements", "Analyze requirements and acceptance criteria", "RequirementsAgent", []),
-            ("architecture", "Design software architecture and application layers", "ArchitectAgent", ["requirements"]),
-            ("database", "Design database schema and SQL creation scripts", "DatabaseAgent", ["architecture"]),
-            ("developer", "Implement task management API endpoints, schemas, models", "DeveloperAgent", ["database"]),
-            ("testing", "Generate unit/integration tests and run test suites", "TestingAgent", ["developer"]),
-            ("review", "Perform full code review on generated endpoints and structure", "CodeReviewAgent", ["testing"])
-        ]
+        planned = self._plan_with_llm(goal)
+        source = "llm"
+        if planned is None:
+            planned = DEFAULT_PLAN
+            source = "fallback"
+
+        log_event(
+            self.db,
+            project_id=self.project_id,
+            event_type="PLAN_CREATED",
+            message=(
+                f"Planned {len(planned)} tasks for this goal."
+                if source == "llm"
+                else f"Planner unavailable; using the default {len(planned)}-task plan."
+            ),
+            agent="ProjectManagerAgent",
+            payload={"source": source, "tasks": [t.model_dump() for t in planned]},
+        )
 
         created_tasks = []
-        task_uuid_map = {}
+        key_to_id: dict[str, uuid.UUID] = {}
 
-        for idx, (code, title, agent, deps_codes) in enumerate(tasks_definition):
-            dependencies = [task_uuid_map[d] for d in deps_codes if d in task_uuid_map]
-            
+        for idx, planned_task in enumerate(planned):
+            dependencies = [key_to_id[d] for d in planned_task.depends_on if d in key_to_id]
+
             new_task = Task(
                 project_id=self.project_id,
-                title=title,
-                description=f"Automated execution task for phase: {code}",
+                title=planned_task.title,
+                description=planned_task.description or f"Phase: {planned_task.key}",
                 status=TaskStatus.READY if not dependencies else TaskStatus.PENDING,
-                priority=10 - idx,
-                assigned_agent=agent,
-                dependencies=dependencies
+                # Higher priority runs first; earlier tasks outrank later ones.
+                priority=len(planned) - idx,
+                assigned_agent=planned_task.agent,
+                dependencies=dependencies,
             )
             self.db.add(new_task)
             self.db.commit()
             self.db.refresh(new_task)
-            
-            task_uuid_map[code] = new_task.id
+
+            key_to_id[planned_task.key] = new_task.id
             created_tasks.append({
                 "id": str(new_task.id),
                 "title": new_task.title,
                 "agent": new_task.assigned_agent,
-                "status": new_task.status
+                "status": new_task.status,
             })
 
             log_event(
                 self.db,
                 project_id=self.project_id,
                 event_type="TASK_CREATED",
-                message=f"Task '{new_task.title}' created and assigned to {new_task.assigned_agent}."
+                message=f"Task '{new_task.title}' created and assigned to {new_task.assigned_agent}.",
             )
 
-        return {"created_tasks": created_tasks}
+        return {"plan_source": source, "created_tasks": created_tasks}
 
 
 class RequirementsAgent(BaseAgent):
@@ -534,17 +649,51 @@ class CriticAgent(BaseAgent):
     """Challenges design architectural flaws, code inconsistencies, or missing specifications."""
 
     def _run(self, task: Task | None, input_payload: dict | None, agent_run_id: uuid.UUID) -> dict:
-        prompt = f"Audit this proposed implementation design:\n{json.dumps(input_payload)}"
-        sys_prompt = "You are an independent Agent Critic. Identify contradictions, gaps, and weaknesses."
-        
+        # Critique the decisions other agents actually recorded, not just the
+        # goal; without this context the Critic has nothing concrete to reject.
+        memories = {
+            m.key: m.value
+            for m in self.db.query(MemoryEntry).filter(
+                MemoryEntry.project_id == self.project_id
+            )
+        }
+        goal = (input_payload or {}).get("goal", "")
+
+        prompt = (
+            f"Goal:\n{goal}\n\n"
+            f"Requirements:\n{clip(memories.get('requirements', 'none recorded'), 2500)}\n\n"
+            f"Architecture:\n{clip(memories.get('architecture', 'none recorded'), 2000)}\n\n"
+            f"Database schema:\n{clip(memories.get('database_schema', 'none recorded'), 2000)}\n\n"
+            f"Find concrete problems: requirements with no design covering them, "
+            f"contradictions between these documents, unsupported assumptions, "
+            f"security gaps, and anything declared done that is not. "
+            f"Set approved=false if you find a problem that should block implementation."
+        )
+        sys_prompt = (
+            "You are an independent Critic agent. Your job is to find real flaws, not to "
+            "approve. Cite the specific requirement or table you are objecting to."
+        )
+
         res: CriticOutput = self.llm.generate_structured(prompt, CriticOutput, sys_prompt)
+
+        self.db.add(MemoryEntry(
+            project_id=self.project_id,
+            key="critique",
+            value=res.model_dump_json(),
+        ))
+        self.db.commit()
 
         log_event(
             self.db,
             project_id=self.project_id,
             event_type="AGENT_COMPLETED",
-            message=f"Critic Audit completed. Approved: {res.approved}. Suggestions count: {len(res.suggestions)}.",
-            payload=res.model_dump()
+            message=(
+                f"Critic approved the design with {len(res.suggestions)} suggestion(s)."
+                if res.approved
+                else f"Critic raised {len(res.criticisms)} objection(s) against the design."
+            ),
+            agent="CriticAgent",
+            payload=res.model_dump(),
         )
 
         return res.model_dump()
