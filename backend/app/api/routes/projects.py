@@ -1,16 +1,27 @@
+import asyncio
+import json
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.models.artifact import Artifact
+from app.models.code_review import CodeReview
 from app.models.event import Event
-from app.models.project import Project
+from app.models.project import Project, ProjectStatus
 from app.models.task import Task
+from app.models.test_run import TestRun
+from app.orchestration.orchestrator import run_project_orchestration
 from app.schemas.event import EventRead
 from app.schemas.project import ProjectCreate, ProjectRead
 from app.schemas.task import TaskRead
 from app.services.events import log_event
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -61,17 +72,6 @@ def list_project_events(project_id: uuid.UUID, db: Session = Depends(get_db)) ->
     return db.query(Event).filter(Event.project_id == project_id).order_by(Event.created_at).all()
 
 
-from fastapi import BackgroundTasks
-import asyncio
-import json
-from fastapi.responses import StreamingResponse
-from app.models.project import ProjectStatus
-from app.models.artifact import Artifact
-from app.models.test_run import TestRun
-from app.models.code_review import CodeReview
-from app.orchestration.orchestrator import run_project_orchestration
-
-
 @router.post("/{project_id}/start")
 def start_project(project_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     project = _get_project_or_404(db, project_id)
@@ -86,9 +86,8 @@ def start_project(project_id: uuid.UUID, background_tasks: BackgroundTasks, db: 
         bg_db = SessionLocal()
         try:
             run_project_orchestration(bg_db, project_id)
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.error(f"Background execution failed: {e}")
+        except Exception:
+            logger.exception("Background orchestration failed")
         finally:
             bg_db.close()
             
