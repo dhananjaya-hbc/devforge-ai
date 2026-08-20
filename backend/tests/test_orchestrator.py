@@ -57,11 +57,24 @@ def test_project_orchestration_loop(db_session):
             ProjectStatus.RUNNING,
         }
 
-        # 4. The planner must build the full task graph and start executing it
+        # 4. The planner must build a workable task graph and start executing it.
+        #    The task count is no longer asserted exactly: the plan is produced
+        #    per goal, so pinning a number would only test the fallback.
         tasks = db_session.query(Task).filter(Task.project_id == project.id).all()
-        assert len(tasks) == 6
+        assert 2 <= len(tasks) <= 12
         assert any(t.status == TaskStatus.COMPLETED for t in tasks)
         assert all(t.assigned_agent for t in tasks)
+
+        # Every plan must contain implementation and verification work
+        agents = {t.assigned_agent for t in tasks}
+        assert "DeveloperAgent" in agents
+        assert "TestingAgent" in agents
+
+        # Dependencies must only reference tasks in this project (no dangling ids)
+        task_ids = {t.id for t in tasks}
+        for t in tasks:
+            for dep in t.dependencies or []:
+                assert dep in task_ids, "task depends on an id outside its own graph"
 
         # 5. Verify telemetry events were logged
         events = db_session.query(Event).filter(Event.project_id == project.id).all()

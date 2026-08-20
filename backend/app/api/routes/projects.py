@@ -3,8 +3,9 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -183,52 +184,65 @@ def get_project_reviews(project_id: uuid.UUID, db: Session = Depends(get_db)):
     } for r in reviews]
 
 
+def _event_payload(event: Event) -> str:
+    return "data: " + json.dumps({
+        "id": str(event.id),
+        "agent": event.agent,
+        "event_type": event.event_type,
+        "message": event.message,
+        "payload": event.payload,
+        "created_at": event.created_at.isoformat(),
+    }) + "\n\n"
+
+
 @router.get("/{project_id}/events/stream")
-def stream_project_events(project_id: uuid.UUID, db: Session = Depends(get_db)):
+def stream_project_events(
+    project_id: uuid.UUID, request: Request, db: Session = Depends(get_db)
+):
+    """Stream project events as they are written.
+
+    Progress is tracked with a (timestamp, id) cursor rather than a set of seen
+    ids: the previous version grew a NOT IN clause containing every event so far
+    and rebuilt it every second.
+    """
     _get_project_or_404(db, project_id)
 
     async def event_generator():
-        sent_event_ids = set()
-        
-        initial_events = db.query(Event).filter(Event.project_id == project_id).order_by(Event.created_at.asc()).all()
-        for e in initial_events:
-            sent_event_ids.add(e.id)
-            payload = {
-                "id": str(e.id),
-                "agent": e.agent,
-                "event_type": e.event_type,
-                "message": e.message,
-                "payload": e.payload,
-                "created_at": e.created_at.isoformat()
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
+        from app.core.database import SessionLocal
+
+        last_seen: tuple | None = None
 
         while True:
-            from app.core.database import SessionLocal
-            bg_db = SessionLocal()
-            try:
-                new_events = bg_db.query(Event).filter(
-                    Event.project_id == project_id,
-                    ~Event.id.in_(list(sent_event_ids)) if sent_event_ids else True
-                ).order_by(Event.created_at.asc()).all()
+            # A browser that closed the tab must not keep this loop, and its
+            # database sessions, alive forever.
+            if await request.is_disconnected():
+                break
 
-                for e in new_events:
-                    sent_event_ids.add(e.id)
-                    payload = {
-                        "id": str(e.id),
-                        "agent": e.agent,
-                        "event_type": e.event_type,
-                        "message": e.message,
-                        "payload": e.payload,
-                        "created_at": e.created_at.isoformat()
-                    }
-                    yield f"data: {json.dumps(payload)}\n\n"
-                    
+            stream_db = SessionLocal()
+            try:
+                query = stream_db.query(Event).filter(Event.project_id == project_id)
+                if last_seen is not None:
+                    last_ts, last_id = last_seen
+                    query = query.filter(
+                        or_(
+                            Event.created_at > last_ts,
+                            and_(Event.created_at == last_ts, Event.id != last_id),
+                        )
+                    )
+
+                for event in query.order_by(Event.created_at.asc()).limit(200):
+                    yield _event_payload(event)
+                    last_seen = (event.created_at, event.id)
             except Exception:
-                pass
+                logger.exception("Event stream query failed")
             finally:
-                bg_db.close()
+                stream_db.close()
+
             await asyncio.sleep(1)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 

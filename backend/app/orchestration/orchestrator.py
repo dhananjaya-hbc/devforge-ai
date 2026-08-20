@@ -49,6 +49,38 @@ def check_dependencies_completed(db: Session, task: Task) -> bool:
     return True
 
 
+def _reset_downstream(db: Session, project_id: uuid.UUID, from_agent: str) -> None:
+    """Re-queue an agent's task and everything that depends on its output.
+
+    Re-running the developer without also re-running the tests would leave the
+    dashboard showing results measured against code that no longer exists.
+    """
+    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+    by_id = {t.id: t for t in tasks}
+
+    origin = next((t for t in tasks if t.assigned_agent == from_agent), None)
+    if origin is None:
+        logger.warning(f"Cannot reset: no task assigned to {from_agent}")
+        return
+
+    # Walk the dependency edges forward from the origin task.
+    to_reset = {origin.id}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            if task.id in to_reset:
+                continue
+            if any(dep in to_reset for dep in (task.dependencies or [])):
+                to_reset.add(task.id)
+                changed = True
+
+    for task_id in to_reset:
+        task = by_id[task_id]
+        task.status = TaskStatus.READY if task_id == origin.id else TaskStatus.PENDING
+    db.commit()
+
+
 def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
     """Main execution loop that resolves dependencies, runs agents, and handles recovery."""
     project = db.get(Project, project_id)
@@ -227,14 +259,9 @@ def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
                             event_type="TEST_FAILED",
                             message=f"Autonomous Debugging Loop triggered (Attempt {target_task.attempts}/3). Resetting Developer task..."
                         )
-                        # Reset DeveloperAgent task to PENDING/READY so it fixes the code
-                        dev_task = db.query(Task).filter(
-                            Task.project_id == project_id, Task.assigned_agent == "DeveloperAgent"
-                        ).first()
-                        if dev_task:
-                            dev_task.status = TaskStatus.READY
-                        # Reset testing task to PENDING
-                        target_task.status = TaskStatus.PENDING
+                        # Send the work back to the Developer, along with every
+                        # task that consumes its output.
+                        _reset_downstream(db, project_id, from_agent="DeveloperAgent")
                         db.commit()
                         continue
                     else:
@@ -248,6 +275,43 @@ def run_project_orchestration(db: Session, project_id: uuid.UUID) -> None:
                             message="Autonomous debugging loop exceeded maximum retries (3/3). Human intervention required."
                         )
                         break
+
+            # A review that finds serious defects must send work back, or the
+            # review is just a report nobody acts on.
+            if agent_name == "CodeReviewAgent":
+                severity = (output or {}).get("severity", "LOW")
+                status = (output or {}).get("status", "PASS")
+                blocking = severity in {"HIGH", "CRITICAL"} or status == "FAIL"
+
+                if blocking and target_task.attempts < 3:
+                    log_event(
+                        db,
+                        project_id=project_id,
+                        event_type="REVIEW_FAILED",
+                        message=(
+                            f"Code review returned {status} at {severity} severity. "
+                            f"Sending the work back to the Developer "
+                            f"(attempt {target_task.attempts}/3)."
+                        ),
+                    )
+                    _reset_downstream(db, project_id, from_agent="DeveloperAgent")
+                    target_task.status = TaskStatus.PENDING
+                    db.commit()
+                    continue
+
+                if blocking:
+                    target_task.status = TaskStatus.FAILED
+                    db.commit()
+                    log_event(
+                        db,
+                        project_id=project_id,
+                        event_type="PROJECT_FAILED",
+                        message=(
+                            f"Code review still reports {severity} issues after 3 attempts. "
+                            f"Human review required."
+                        ),
+                    )
+                    break
 
             # Normal success path
             target_task.status = TaskStatus.COMPLETED
